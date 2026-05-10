@@ -1,6 +1,7 @@
+#!/usr/bin/env python3
 import numpy as np
 import faiss
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 
 
 # ===== PASSO 1 =====
@@ -28,46 +29,33 @@ documentos_medicos = [
 ]
 
 
-# ===== PASSO 2: HyDE Determinístico =====
-DICIONARIO_COLOQUIAL = {
-    "dor de cabeça": "cefaleia",
-    "luz incomodando": "fotofobia",
-    "vista embaçada": "turvação visual",
-    "tontura": "vertigem",
-    "falta de ar": "dispneia",
-    "cansaço": "fadiga",
-    "aperto no peito": "angina pectoris",
-    "coração acelerado": "taquicardia",
-    "tosse com catarro": "expectoração purulenta",
-    "chiado no peito": "sibilância",
-    "desmaio": "síncope",
-    "formigamento": "parestesia",
-    "boca torta": "paralisia facial",
-    "convulsão": "crise epiléptica",
-    "dor nas juntas": "artralgia",
-    "inchaço": "edema",
-    "febre alta": "hipertermia",
-    "suor frio": "diaforese",
-}
+# ===== PASSO 2: HyDE com LLM =====
+import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url=os.getenv("LLM_API_BASE", "https://api.xiaomimimo.com/v1"),
+    api_key=os.getenv("LLM_API_KEY"),
+)
 
 
 def gerar_documento_hipotetico(query_coloquial: str) -> str:
-    query_modificada = query_coloquial
-    termos_encontrados = []
-    for coloquial, tecnico in DICIONARIO_COLOQUIAL.items():
-        if coloquial in query_modificada:
-            query_modificada = query_modificada.replace(coloquial, tecnico)
-            termos_encontrados.append(tecnico)
-    if not termos_encontrados:
-        return query_coloquial
-    termos_str = ", ".join(termos_encontrados)
-    return (
-        f"Paciente relata quadro clínico compatível com {termos_str}. "
-        "Ao exame neurológico, observa-se sinais focais ausentes. "
-        "A hipótese diagnóstica principal envolve enxaqueca clássica, "
-        "devendo-se considerar diagnósticos diferenciais como "
-        "cefaleia tensional e cefaleia em salvas."
+    prompt = (
+        "Você é um médico especialista. Um paciente leigo descreveu os seguintes sintomas "
+        "usando linguagem coloquial. Gere um pequeno parágrafo de prontuário médico técnico, "
+        "no mesmo estilo e jargão de um manual de neurologia, que poderia corresponder a esses sintomas. "
+        "NÃO responda à pergunta do paciente — apenas alucine um trecho de manual que contenha "
+        "termos técnicos associados.\n\n"
+        f"Sintomas relatados pelo paciente: {query_coloquial}\n\n"
+        "Trecho de manual médico:"
     )
+    resposta = client.chat.completions.create(
+        model=os.getenv("LLM_MODEL", "mimo-v2-flash"),
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=200,
+        temperature=0.7,
+    )
+    return resposta.choices[0].message.content.strip()
 
 
 query_teste = "dor de cabeça latejante e luz incomodando"
@@ -92,7 +80,17 @@ vetor_hyde = vetor_hyde / np.linalg.norm(vetor_hyde)
 distancias, indices = index.search(vetor_hyde, 10)
 
 
-# ===== PASSO 6 =====
+# ===== PASSO 6: Re-ranking com Cross-Encoder =====
+cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+
+query_original = query_teste
+pares = [(query_original, documentos_medicos[idx]) for idx in indices[0]]
+scores_ce = cross_encoder.predict(pares)
+
+indices_ordenados_ce = np.argsort(scores_ce)[::-1]
+
+
+# ===== PASSO 7 =====
 if __name__ == "__main__":
     print(f"Total de documentos indexados: {index.ntotal}")
     print(f"Dimensionalidade: {index.d}")
@@ -100,3 +98,16 @@ if __name__ == "__main__":
     print("\n--- TOP-10 (Busca Bi-Encoder via HyDE) ---")
     for i, (score, idx) in enumerate(zip(distancias[0], indices[0])):
         print(f"#{i + 1} [score={score:.4f}] {documentos_medicos[idx]}")
+
+    print("\n--- TOP-3 APÓS CROSS-ENCODER ---")
+    for rank, pos in enumerate(indices_ordenados_ce[:3]):
+        idx = indices[0][pos]
+        print(f"#{rank + 1} [score={scores_ce[pos]:.4f}] {documentos_medicos[idx]}")
+
+    print("\n--- COMPARAÇÃO BI-ENCODER vs CROSS-ENCODER ---")
+    print(f"{'#':>3} {'Pos BE':>6} {'Score BE':>8} {'Pos CE':>6} {'Score CE':>8}")
+    for i in range(10):
+        novo_rank = int(np.where(indices_ordenados_ce == i)[0][0]) + 1
+        print(
+            f"{i + 1:>3} {i + 1:>6} {distancias[0][i]:>8.4f} {novo_rank:>6} {scores_ce[i]:>8.4f}"
+        )

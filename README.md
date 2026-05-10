@@ -23,8 +23,16 @@
 
 ```bash
 pip install -r requirements.txt
+
+# Configure as variáveis de ambiente
+cp .env.example .env
+# Edite .env com suas credenciais
+
 python main.py
 ```
+
+## Atribuição de IA
+Este projeto utilizou ferramentas de inteligência artificial (OpenCode/Claude) para brainstorming da arquitetura do pipeline RAG, refinamento dos hiperparâmetros HNSW e geração assistida do código-fonte.
 
 ## Atribuição de IA
 Este projeto utilizou ferramentas de inteligência artificial (OpenCode/Claude) para brainstorming da arquitetura do pipeline RAG, refinamento dos hiperparâmetros HNSW e geração assistida do código-fonte.
